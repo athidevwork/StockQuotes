@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Stock Quotes</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 20px; }
+      table { border-collapse: collapse; width: 100%; max-width: 800px; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background: #f4f4f4; }
+      input[type="number"] { width: 80px; }
+    </style>
+  </head>
+  <body>
+    <h1>Stock Quotes</h1>
+
+    <div>
+      <label>Add symbol:</label>
+      <input id="symbolInput" placeholder="e.g. AAPL" />
+      <button id="addBtn">Add</button>
+      &nbsp;&nbsp;
+      <label>Refresh (seconds):</label>
+      <input id="refreshInput" type="number" min="1" value="{{ default_refresh }}" />
+      <button id="startStopBtn">Start</button>
+    </div>
+
+    <p id="status"></p>
+
+    <table id="quotesTable">
+      <thead>
+        <tr><th>Symbol</th><th>Price</th><th>Last Updated</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <script>
+      const initialStocks = {{ stocks|tojson }};
+      let symbols = Array.from(new Set(initialStocks.map(s => s.toUpperCase())));
+      let timer = null;
+
+      const status = document.getElementById('status');
+      const tbody = document.querySelector('#quotesTable tbody');
+      const refreshInput = document.getElementById('refreshInput');
+      const startStopBtn = document.getElementById('startStopBtn');
+
+      function renderRows(quotes) {
+        tbody.innerHTML = '';
+        quotes.forEach(q => {
+          const tr = document.createElement('tr');
+          const priceText = q.price === null ? 'N/A' : q.price;
+          tr.innerHTML = `<td>${q.symbol}</td><td>${priceText}</td><td>${q.timestamp}</td>`;
+          tbody.appendChild(tr);
+        });
+      }
+
+      async function fetchQuotes() {
+        if (symbols.length === 0) return renderRows([]);
+        const qs = symbols.join(',');
+        status.textContent = 'Fetching...';
+        try {
+          const res = await fetch(`/api/quotes?tickers=${encodeURIComponent(qs)}`);
+          const data = await res.json();
+          renderRows(data.quotes);
+          status.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+        } catch (err) {
+          status.textContent = 'Error fetching quotes';
+        }
+      }
+
+      function startPolling() {
+        stopPolling();
+        const seconds = Math.max(1, parseInt(refreshInput.value) || 5);
+        fetchQuotes();
+        timer = setInterval(fetchQuotes, seconds * 1000);
+        startStopBtn.textContent = 'Stop';
+      }
+
+      function stopPolling() {
+        if (timer) { clearInterval(timer); timer = null; }
+        startStopBtn.textContent = 'Start';
+      }
+
+      document.getElementById('addBtn').addEventListener('click', () => {
+        const v = document.getElementById('symbolInput').value.trim().toUpperCase();
+        if (v && !symbols.includes(v)) {
+          symbols.push(v);
+          fetchQuotes();
+        }
+        document.getElementById('symbolInput').value = '';
+      });
+
+      startStopBtn.addEventListener('click', () => {
+        if (timer) stopPolling(); else startPolling();
+      });
+
+      // initial fetch render
+      fetchQuotes();
+    </script>
+  </body>
+</html>
