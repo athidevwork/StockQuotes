@@ -6,10 +6,21 @@
     <title>Stock Quotes</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 20px; }
-      table { border-collapse: collapse; width: 100%; max-width: 800px; }
-      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      table { border-collapse: collapse; width: 100%; max-width: 800px; border: 2px solid #cfcfcf; }
+      th, td { border: 1px solid #bbb; padding: 8px; text-align: left; }
       th { background: #f4f4f4; }
+      td.price { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+      .delta { margin-left: 8px; font-weight: 500; font-size: 0.95em; }
+      .delta-up { color: #0a8b2a; }
+      .delta-down { color: #d02828; }
+      .delta-zero { color: #666; }
+      tbody tr:nth-child(even) { background: #fafafa; }
+      tbody tr:hover { background: #f1f7ff; }
+      th.symbol { width: 20%; }
+      th.price { width: 20%; }
+      th.timestamp { width: 60%; }
       input[type="number"] { width: 80px; }
+      button.remove-btn { margin-left: 8px; font-size: 0.8em; padding: 3px 6px; }
     </style>
   </head>
   <body>
@@ -27,12 +38,28 @@
 
     <p id="status"></p>
 
+    {% if show_console %}
+    <h2>Console (local)</h2>
+    <label><input id="consoleToggle" type="checkbox" checked /> Show Console</label>
+    <button id="exportBtn">Export Logs</button>
+    <div id="consoleWrapper">
+      <pre id="console" style="background:#111;color:#0f0;padding:10px;border-radius:6px;max-width:800px;white-space:pre-wrap;overflow:auto;"></pre>
+    </div>
+    <div id="legend" style="max-width:800px;margin-top:8px;font-size:0.95em;">
+      <strong>Legend:</strong>
+      <span class="delta-up" style="margin-left:8px">▲ Up</span>
+      <span class="delta-down" style="margin-left:8px">▼ Down</span>
+      <span class="delta-zero" style="margin-left:8px">— No change</span>
+    </div>
+    {% endif %}
+
     <table id="quotesTable">
       <thead>
         <tr><th>Symbol</th><th>Price</th><th>Last Updated</th></tr>
       </thead>
       <tbody></tbody>
     </table>
+
 
     <script>
       const initialStocks = {{ stocks|tojson }};
@@ -46,13 +73,32 @@
 
       function renderRows(quotes) {
         tbody.innerHTML = '';
-        quotes.forEach(q => {
-          const tr = document.createElement('tr');
-          const priceText = q.price === null ? 'N/A' : q.price;
-          tr.innerHTML = `<td>${q.symbol}</td><td>${priceText}</td><td>${q.timestamp}</td>`;
-          tbody.appendChild(tr);
-        });
+          quotes.forEach(q => {
+            const tr = document.createElement('tr');
+            const priceText = q.price === null ? 'N/A' : `$${Number(q.price).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            let deltaHtml = '';
+          if (q.delta == null) {
+            deltaHtml = '';
+          } else {
+            const arrow = q.delta > 0 ? '▲' : (q.delta < 0 ? '▼' : '—');
+            const cls = q.delta > 0 ? 'delta-up' : (q.delta < 0 ? 'delta-down' : 'delta-zero');
+            const title = 'Delta = current - previous price (null when no previous value)';
+            deltaHtml = `<span class="delta ${cls}" title="${title}">${arrow} ${Number(q.delta).toFixed(2)}</span>`;
+          }
+            tr.innerHTML = `<td>${q.symbol} <button class="remove-btn" data-symbol="${q.symbol}">Remove</button></td><td class="price">${priceText}${deltaHtml}</td><td>${q.timestamp}</td>`;
+            tbody.appendChild(tr);
+          });
       }
+
+        // allow removing symbols from the table
+        tbody.addEventListener('click', (ev) => {
+          const btn = ev.target.closest && ev.target.closest('.remove-btn');
+          if (!btn) return;
+          const sym = btn.getAttribute('data-symbol');
+          if (!sym) return;
+          symbols = symbols.filter(s => s !== sym);
+          fetchQuotes();
+        });
 
       async function fetchQuotes() {
         if (symbols.length === 0) return renderRows([]);
@@ -61,8 +107,68 @@
         try {
           const res = await fetch(`/api/quotes?tickers=${encodeURIComponent(qs)}`);
           const data = await res.json();
-          renderRows(data.quotes);
+
+          // enrich quotes with per-symbol deltas computed against previous fetch
+          if (!window._prevPrices) window._prevPrices = {};
+          const enriched = data.quotes.map(q => {
+            const prev = window._prevPrices[q.symbol];
+            const p = q.price;
+            const delta = (prev == null || p == null) ? null : (Number(p) - Number(prev));
+            window._prevPrices[q.symbol] = p;
+            return Object.assign({}, q, { delta });
+          });
+
+          renderRows(enriched);
           status.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
+          const consoleEl = document.getElementById('console');
+          if (consoleEl) {
+            // build console payload with headers, fetch timestamp, and per-symbol deltas
+            const payload = {};
+            payload.fetched_at = new Date().toISOString();
+            // add a human-friendly display for deltas so the console is easier to read
+            payload.quotes = enriched.map(q => {
+              const arrow = q.delta == null ? null : (q.delta > 0 ? '▲' : (q.delta < 0 ? '▼' : '—'));
+              const delta_display = q.delta == null ? null : `${arrow} ${Number(q.delta).toFixed(2)}`;
+              const delta_color = q.delta == null ? null : (q.delta > 0 ? 'up' : (q.delta < 0 ? 'down' : 'zero'));
+              return Object.assign({}, q, { delta_display, delta_color });
+            });
+            payload.headers = {};
+            try {
+              res.headers.forEach((v,k) => { payload.headers[k] = v; });
+            } catch (e) {}
+
+            consoleEl.textContent = JSON.stringify(payload, null, 2);
+            // store last payload for export
+            window._lastPayload = payload;
+          }
+
+          // wire up console toggle to show/hide without reloading
+          const toggle = document.getElementById('consoleToggle');
+          const wrapper = document.getElementById('consoleWrapper');
+          if (toggle && wrapper) {
+            toggle.addEventListener('change', () => {
+              wrapper.style.display = toggle.checked ? 'block' : 'none';
+            });
+            // initialize visibility
+            wrapper.style.display = toggle.checked ? 'block' : 'none';
+          }
+
+          // export button downloads the last payload as JSON
+          const exportBtn = document.getElementById('exportBtn');
+          if (exportBtn) {
+            exportBtn.addEventListener('click', () => {
+              const payload = window._lastPayload || { fetched_at: new Date().toISOString(), quotes: [] };
+              const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `stockquotes-${new Date().toISOString()}.json`;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              URL.revokeObjectURL(url);
+            });
+          }
         } catch (err) {
           status.textContent = 'Error fetching quotes';
         }
